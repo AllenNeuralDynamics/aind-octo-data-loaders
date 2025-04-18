@@ -2,6 +2,7 @@
 Example to instantiate a chain of iterable datasets
 """
 import os
+import yaml
 import numpy as np
 
 import torch
@@ -29,7 +30,26 @@ def custom_transform(sample: np.ndarray) -> np.ndarray:
         return (sample - sample.min()) / (sample.max() - sample.min())
     return sample
 
+
+def load_config(path):
+    """load yaml configuration"""
+    with open(path, "r") as f:
+        return yaml.safe_load(f)
+    
+
 def setup():
+    """
+    DDP setup to establish local and global ranks following `torchrun` call
+
+    Returns
+    -------
+    int
+        Process rank
+    int
+        Process world size
+    int
+        Process local rank
+    """
     if dist.is_available() and dist.is_initialized():
         dist.init_process_group("nccl")
         rank = int(os.environ["RANK"])
@@ -37,36 +57,36 @@ def setup():
         local_rank = int(os.environ["LOCAL_RANK"])
         torch.cuda.set_device(local_rank)
     else:
-        rank = 0
-        local_rank = 0
-        world_size = 1
+        rank, local_rank, world_size = 0, 0, 1
     return rank, world_size, local_rank
+
+
 
 
 def main():
     """
     Example usage of the ZarrDatasets class.
     """
-
-    bucket_path = "s3://aind-open-data"
-    dataset_paths = [
-        "HCR_704576_2024-04-22_13-00-00/SPIM.ome.zarr/R0_X_0000_Y_0003_Z_0000_ch_405.zarr",  # HCR
-        "SmartSPIM_722649_2025-04-08_13-01-09_stitched_2025-04-09_06-15-07/image_tile_fusing/OMEZarr/Ex_639_Em_667.zarr",  # SmartSPIM
-        "HCR_785830_2025-03-19_17-00-00/SPIM/Tile_X_0001_Y_0029_Z_0000_ch_488.ome.zarr",  # Proteomics
-    ]
-
     rank, world_size, local_rank = setup()
     device = torch.device(f"cuda:{local_rank}")
 
-    for i, path in enumerate(dataset_paths):
-        dataset_paths[i] = f"{bucket_path}/{path}"
-        print(f"Dataset {i+1} path: {dataset_paths[i]}")
+    cfg = load_config("configs/example_data.yaml")
+    dataset_paths = [f"{cfg['dataset']['bucket_path']}/{i}" for i in cfg["dataset"]["train"]["paths"]]
+
+    #for i, path in enumerate(dataset_paths):
+    #    dataset_paths[i] = f"{bucket_path}/{path}"
+    #    print(f"Dataset {i+1} path: {dataset_paths[i]}")
 
     print("Using datasets: ", dataset_paths)
     # Example configuration
     dataset_scales = ["3", "3", "3"]  # Different scales for each dataset
-    patch_size = [64, 64, 64]  # Z, Y, X dimensions
-    batch_size = 4
+    
+    patch_size = (
+        cfg["loader"]["patch_size"],
+        cfg["loader"]["patch_size"],
+        cfg["loader"]["patch_size"]
+    )
+    batch_size = cfg["loader"]["batch_size"]
 
     try:
         # Initialize ZarrDatasets with custom transform
