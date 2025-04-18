@@ -9,7 +9,7 @@ from zarrdataset import (
     ImagesDatasetSpecs,
     PatchSampler,
     ZarrDataset,
-    zarrdataset_worker_init_fn,
+    chained_zarrdataset_worker_init_fn,
 )
 
 
@@ -163,7 +163,7 @@ class ZarrDatasets:
             self.zarr_datasets,
             batch_size=self.batch_size,
             num_workers=self.num_workers,
-            worker_init_fn=zarrdataset_worker_init_fn,
+            worker_init_fn=chained_zarrdataset_worker_init_fn,
             pin_memory=True,
         )
 
