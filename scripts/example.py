@@ -1,8 +1,11 @@
 """
 Example to instantiate a chain of iterable datasets
 """
-
+import os
 import numpy as np
+
+import torch
+import torch.distributed as dist
 
 from aind_octo_data_loaders.dataloader import ZarrDatasets
 
@@ -26,6 +29,19 @@ def custom_transform(sample: np.ndarray) -> np.ndarray:
         return (sample - sample.min()) / (sample.max() - sample.min())
     return sample
 
+def setup():
+    if dist.is_available() and dist.is_initialized():
+        dist.init_process_group("nccl")
+        rank = int(os.environ["RANK"])
+        world_size = int(os.environ["WORLD_SIZE"])
+        local_rank = int(os.environ["LOCAL_RANK"])
+        torch.cuda.set_device(local_rank)
+    else:
+        rank = 0
+        local_rank = 0
+        world_size = 1
+    return rank, world_size, local_rank
+
 
 def main():
     """
@@ -38,6 +54,9 @@ def main():
         "SmartSPIM_722649_2025-04-08_13-01-09_stitched_2025-04-09_06-15-07/image_tile_fusing/OMEZarr/Ex_639_Em_667.zarr",  # SmartSPIM
         "HCR_785830_2025-03-19_17-00-00/SPIM/Tile_X_0001_Y_0029_Z_0000_ch_488.ome.zarr",  # Proteomics
     ]
+
+    rank, world_size, local_rank = setup()
+    device = torch.device(f"cuda:{local_rank}")
 
     for i, path in enumerate(dataset_paths):
         dataset_paths[i] = f"{bucket_path}/{path}"
@@ -76,6 +95,7 @@ def main():
             worker_ids, positions, data = batch
 
             print(f"Batch {i+1}:")
+            print(f"Rank: {rank}/{world_size}")
             print(f"  Images shape: {data.shape}")
             print(f"  Positions: {positions}")
             print(f"  Worker IDs: {worker_ids}")
