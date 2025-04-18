@@ -17,6 +17,8 @@ readme = "README.md"
 dynamic = ["version"]
 
 dependencies = [
+    'zarrdataset==0.2.1',
+    'torch==2.2.2',
 ]
 
 [project.optional-dependencies]
