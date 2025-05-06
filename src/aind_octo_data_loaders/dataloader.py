@@ -136,7 +136,7 @@ class ZarrDatasets:
                             filenames=[dataset_path],
                             modality="images",
                             source_axes=self.axes,
-                            data_group=self.dataset_scales[i],
+                            data_group=str(self.dataset_scales[i]),
                             transform=self.transform,
                         )
                     ],
