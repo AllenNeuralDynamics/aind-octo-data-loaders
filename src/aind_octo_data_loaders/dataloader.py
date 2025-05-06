@@ -59,6 +59,8 @@ class ZarrDatasets:
         shuffle: bool = True,
         transform: Optional[Callable] = None,
         num_workers: int = 4,
+        return_positions: bool = False,
+        return_worker_id: bool = False,
     ):
         self.dataset_paths = dataset_paths
         self.axes = axes
@@ -68,6 +70,8 @@ class ZarrDatasets:
         self.shuffle = shuffle
         self.batch_size = batch_size
         self.num_workers = num_workers
+        self.return_positions=return_positions,
+        self.return_worker_id=return_worker_id,
 
         # Ensure dataset_paths and dataset_scales have the same length
         if len(dataset_paths) != len(dataset_scales):
@@ -142,8 +146,8 @@ class ZarrDatasets:
                     ],
                     patch_sampler=self.patch_sampler,
                     shuffle=self.shuffle,
-                    return_positions=True,
-                    return_worker_id=True,
+                    return_positions=self.return_positions,
+                    return_worker_id=self.return_worker_id,
                 )
             )
 

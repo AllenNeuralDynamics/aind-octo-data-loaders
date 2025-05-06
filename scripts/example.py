@@ -4,6 +4,7 @@ Example to instantiate a chain of iterable datasets
 import os
 import yaml
 import numpy as np
+from pathlib import Path
 
 import torch
 import torch.distributed as dist
@@ -50,7 +51,8 @@ def setup():
     int
         Process local rank
     """
-    if dist.is_available() and dist.is_initialized():
+    #if dist.is_available() and dist.is_initialized():
+    if True:
         dist.init_process_group("nccl")
         rank = int(os.environ["RANK"])
         world_size = int(os.environ["WORLD_SIZE"])
@@ -67,26 +69,34 @@ def main():
     """
     Example usage of the ZarrDatasets class.
     """
+    # setup multi-device ranking
     rank, world_size, local_rank = setup()
     device = torch.device(f"cuda:{local_rank}")
+    print(f"Using device: {rank}/{world_size-1} (Local rank: {local_rank})")
 
-    cfg = load_config("configs/example_data.yaml")
+    # load example configuration file
+    config_path = Path(__file__).resolve().parent.parent / "configs" / "example_data.yaml"
+    cfg = load_config(config_path)
+    print(f"Configuration: {cfg}")
+
+    # parse dataset paths
     dataset_paths = [f"{cfg['dataset']['bucket_path']}/{i}" for i in cfg["dataset"]["train"]["paths"]]
-
-    #for i, path in enumerate(dataset_paths):
-    #    dataset_paths[i] = f"{bucket_path}/{path}"
-    #    print(f"Dataset {i+1} path: {dataset_paths[i]}")
-
     print("Using datasets: ", dataset_paths)
-    # Example configuration
-    dataset_scales = ["3", "3", "3"]  # Different scales for each dataset
+    
+    # Configure dataset scales 
+    # TODO: add this to config
+    dataset_scales = ["1", "1", "1"]  # Different scales for each dataset
     
     patch_size = (
-        cfg["loader"]["patch_size"],
-        cfg["loader"]["patch_size"],
-        cfg["loader"]["patch_size"]
+        int(cfg["loader"]["patch_size"]),
+        int(cfg["loader"]["patch_size"]),
+        int(cfg["loader"]["patch_size"]),
     )
     batch_size = cfg["loader"]["batch_size"]
+
+    print(f"Batch size: {batch_size}")
+    print(f"Patch size (ZYX): {patch_size}")
+
 
     try:
         # Initialize ZarrDatasets with custom transform
@@ -102,9 +112,6 @@ def main():
         # Get the DataLoader
         dataloader = zarr_datasets.get_dataloader()
 
-        print(f"Batch size: {batch_size}")
-        print(f"Patch size (ZYX): {patch_size}")
-
         # Example of processing a few batches
         print("\nProcessing first 2 batches:")
         for i, batch in enumerate(dataloader):
@@ -114,11 +121,11 @@ def main():
             # Unpack batch data based on ZarrDataset's return structure
             worker_ids, positions, data = batch
 
-            print(f"Batch {i+1}:")
-            print(f"Rank: {rank}/{world_size}")
-            print(f"  Images shape: {data.shape}")
-            print(f"  Positions: {positions}")
-            print(f"  Worker IDs: {worker_ids}")
+            print(f"\n\tBatch {i+1}:")
+            print(f"\tRank: {rank}/{world_size}")
+            print(f"\tImages shape: {data.shape}")
+            print(f"\tPositions: {positions}")
+            print(f"\tWorker IDs: {worker_ids}")
 
     except FileNotFoundError as e:
         print(f"Error: {e}")
