@@ -1,0 +1,15 @@
+dataset:
+  bucket_path: "s3://aind-open-data"
+  train:
+    paths:
+      - HCR_704576_2024-04-22_13-00-00/SPIM.ome.zarr/R0_X_0000_Y_0003_Z_0000_ch_405.zarr  # HCR
+      - SmartSPIM_722649_2025-04-08_13-01-09_stitched_2025-04-09_06-15-07/image_tile_fusing/OMEZarr/Ex_639_Em_667.zarr  # SmartSPIM
+      - HCR_785830_2025-03-19_17-00-00/SPIM/Tile_X_0001_Y_0029_Z_0000_ch_488.ome.zarr  # Proteomics
+
+loader:
+  batch_size: 16
+  data_scale: 3
+  patch_size: 256
+  shuffle: true
+  num_workers: 4
+  pin_memory: true
