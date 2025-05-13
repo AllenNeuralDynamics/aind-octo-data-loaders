@@ -70,8 +70,8 @@ class ZarrDatasets:
         self.shuffle = shuffle
         self.batch_size = batch_size
         self.num_workers = num_workers
-        self.return_positions=return_positions,
-        self.return_worker_id=return_worker_id,
+        self.return_positions=return_positions
+        self.return_worker_id=return_worker_id
 
         # Ensure dataset_paths and dataset_scales have the same length
         if len(dataset_paths) != len(dataset_scales):
