@@ -93,6 +93,7 @@ class ZarrDatasets:
         self.individual_datasets = self._create_datasets()
         self.zarr_datasets = ChainDataset(self.individual_datasets)
         self.dataloader = self._create_dataloader()
+        self.individual_dataloaders = self._create_individual_dataloaders()
 
     def _create_patch_sampler(self) -> PatchSampler:
         """
@@ -174,6 +175,18 @@ class ZarrDatasets:
             worker_init_fn=chained_zarrdataset_worker_init_fn,
             pin_memory=True,
         )
+    
+    def _create_individual_dataloaders(self) -> List[DataLoader]:
+        return [
+            DataLoader(
+                    dataset,
+                    batch_size=self.batch_size,
+                    num_workers=self.num_workers,
+                    worker_init_fn=chained_zarrdataset_worker_init_fn,
+                    pin_memory=True,
+                )
+            for dataset in self.individual_datasets
+        ]
 
     def get_dataloader(self) -> DataLoader:
         """
@@ -206,4 +219,4 @@ class ZarrDatasets:
         int
             Total number of samples.
         """
-        return len(self.zarr_datasets)
+        return len(self.individual_datasets)
