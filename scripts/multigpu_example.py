@@ -10,8 +10,7 @@ import zarrdataset as zds
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
 
-mp.set_start_method("spawn", force=True)
-
+from aind_octo_data_loaders.dataloader import ZarrDatasets
 
 def setup():
     dist.init_process_group("nccl")
@@ -43,48 +42,51 @@ def setup_logger():
 
 
 def main():
-    DATASET_PATH = "s3://aind-open-data/SmartSPIM_709392_2024-01-29_18-33-39_stitched_2024-02-04_12-45-58/image_tile_fusing/OMEZarr/Ex_639_Em_667.zarr"
+    bucket_path = "s3://aind-open-data"
+    dataset_paths = [
+        "HCR_704576_2024-04-22_13-00-00/SPIM.ome.zarr/R0_X_0000_Y_0003_Z_0000_ch_405.zarr",  # HCR
+        "SmartSPIM_722649_2025-04-08_13-01-09_stitched_2025-04-09_06-15-07/image_tile_fusing/OMEZarr/Ex_639_Em_667.zarr",  # SmartSPIM
+        "HCR_785830_2025-03-19_17-00-00/SPIM/Tile_X_0001_Y_0029_Z_0000_ch_488.ome.zarr",  # Proteomics
+    ]
 
-    data_scale = "1"
-    batch_size = 64
-    patch_size = 256
+    for i, path in enumerate(dataset_paths):
+        dataset_paths[i] = f"{bucket_path}/{path}"
+        print(f"Dataset {i+1} path: {dataset_paths[i]}")
 
-    rank, world_size, local_rank = setup()
-    device = torch.device(f"cuda:{local_rank}")
+    print("Using datasets: ", dataset_paths)
 
-    logger = setup_logger()
+    # Example configuration
+    dataset_scales = ["3", "3", "3"]  # Different scales for each dataset
+    patch_size = [64, 64, 64]  # Z, Y, X dimensions
+    batch_size = 4
 
-    my_patch_sampler = zds.PatchSampler(
-        patch_size=dict(X=patch_size, Y=patch_size, Z=patch_size)
-    )
-
-    img_preprocessing = torchvision.transforms.Compose(
+    transforms = torchvision.transforms.Compose(
         [zds.ToDtype(dtype=np.float16)]
     )
 
-    my_dataset = zds.ZarrDataset(
-        [
-            zds.ImagesDatasetSpecs(
-                modality="images",
-                filenames=[DATASET_PATH],
-                source_axes="TCZYX",
-                data_group=data_scale,
-                transform=img_preprocessing,
-            ),
-        ],
-        patch_sampler=my_patch_sampler,
-        shuffle=True,
-        return_positions=True,
-        return_worker_id=True,
-    )
+    # Getting local ranks
+    rank, world_size, local_rank = setup()
+    device = torch.device(f"cuda:{local_rank}")
 
-    my_dataloader = DataLoader(
-        my_dataset,
+    # Setting up logger
+    logger = setup_logger()
+
+    zarr_datasets = ZarrDatasets(
+        dataset_paths=dataset_paths,
+        dataset_scales=dataset_scales,
+        patch_size_zyx=patch_size,
         batch_size=batch_size,
-        worker_init_fn=zds.zarrdataset_worker_init_fn,
+        transform=custom_transform,
+        num_workers=2,
     )
 
-    for i, (worker_ids, positions, batch) in enumerate(my_dataloader):
+    # Get the DataLoader
+    dataloader = zarr_datasets.get_dataloader()
+
+    for i, (worker_ids, positions, batch) in enumerate(dataloader):
+        if i >= 2:  # Process only 2 batches for demonstration
+            break
+
         batch = batch.to(device)
         batch_memory_bytes = batch.element_size() * batch.nelement()
         batch_memory_gb = batch_memory_bytes / (1024**3)
@@ -96,4 +98,5 @@ def main():
 
 
 if __name__ == "__main__":
+    mp.set_start_method("spawn", force=True)
     main()
