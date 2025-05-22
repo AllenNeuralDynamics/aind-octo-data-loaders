@@ -107,6 +107,8 @@ def main():
             batch_size=batch_size,
             transform=custom_transform,
             num_workers=2,
+            return_positions=True,
+            return_worker_id=True
         )
 
         # Get the DataLoader
