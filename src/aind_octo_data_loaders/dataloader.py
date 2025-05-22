@@ -2,13 +2,15 @@
 Concatenated zarr iterable dataset
 """
 
-from typing import Callable, List, Optional, Union
+from typing import Callable, List, Optional, Union, Literal
 
 from torch.utils.data import ChainDataset, DataLoader
 from zarrdataset import (
     ImagesDatasetSpecs,
     PatchSampler,
+    BlueNoisePatchSampler,
     ZarrDataset,
+    zarrdataset_worker_init_fn,
     chained_zarrdataset_worker_init_fn,
 )
 
@@ -61,6 +63,9 @@ class ZarrDatasets:
         num_workers: int = 4,
         return_positions: bool = False,
         return_worker_id: bool = False,
+        return_dataset_paths: bool = False,
+        return_dataset_scales: bool = False,
+        sampler_type: Literal["patch","bluenoise"] = "patch",
     ):
         self.dataset_paths = dataset_paths
         self.axes = axes
@@ -70,8 +75,11 @@ class ZarrDatasets:
         self.shuffle = shuffle
         self.batch_size = batch_size
         self.num_workers = num_workers
-        self.return_positions=return_positions
-        self.return_worker_id=return_worker_id
+        self.return_positions = return_positions
+        self.return_worker_id = return_worker_id
+        self.return_dataset_paths = return_dataset_paths
+        self.return_dataset_scales = return_dataset_scales
+        self.sampler_type = sampler_type
 
         # Ensure dataset_paths and dataset_scales have the same length
         if len(dataset_paths) != len(dataset_scales):
@@ -85,10 +93,19 @@ class ZarrDatasets:
 
     def _initialize_datasets(self):
         """Initialize the patch sampler and create the datasets."""
-        self.patch_sampler = self._create_patch_sampler()
+        if self.sampler_type == "patch":
+            self.sampler = self._create_patch_sampler()
+        elif self.sampler_type == "bluenoise":
+            self.sampler = self._create_blue_noise_patch_sampler()
+        else:
+            raise ValueError(
+                f"Invalid sampler type: {self.sampler_type}. "
+                f"Choose either 'patch' or 'bluenoise'."
+            )
         self.individual_datasets = self._create_datasets()
         self.zarr_datasets = ChainDataset(self.individual_datasets)
         self.dataloader = self._create_dataloader()
+        self.individual_dataloaders = self._create_individual_dataloaders()
 
     def _create_patch_sampler(self) -> PatchSampler:
         """
@@ -117,6 +134,36 @@ class ZarrDatasets:
                 X=self.patch_size_zyx[2],
             )
         )
+    
+    def _create_blue_noise_patch_sampler(self) -> BlueNoisePatchSampler:
+        """
+        Create a blue noise patch sampler with the specified patch dimensions.
+
+        Returns
+        -------
+        BlueNoisePatchSampler
+            Configured patch sampler object.
+
+        Raises
+        ------
+        ValueError
+            If patch_size_zyx does not have exactly 3 dimensions.
+        """
+        if len(self.patch_size_zyx) != 3:
+            raise ValueError(
+                f"Please provide ZYX patches with exactly 3 dimensions. "
+                f"Got {self.patch_size_zyx} with {len(self.patch_size_zyx)} dimensions."
+            )
+
+        return BlueNoisePatchSampler(
+            patch_size = dict(
+                Z=self.patch_size_zyx[0],
+                Y=self.patch_size_zyx[1],
+                X=self.patch_size_zyx[2],
+            ),
+            resample_positions = False,
+            allow_overlap = True,
+        )
 
     def _create_datasets(self) -> List[ZarrDataset]:
         """
@@ -144,10 +191,11 @@ class ZarrDatasets:
                             transform=self.transform,
                         )
                     ],
-                    patch_sampler=self.patch_sampler,
+                    patch_sampler=self.sampler,
                     shuffle=self.shuffle,
                     return_positions=self.return_positions,
                     return_worker_id=self.return_worker_id,
+
                 )
             )
 
@@ -170,6 +218,18 @@ class ZarrDatasets:
             worker_init_fn=chained_zarrdataset_worker_init_fn,
             pin_memory=True,
         )
+    
+    def _create_individual_dataloaders(self) -> List[DataLoader]:
+        return [
+            DataLoader(
+                    dataset,
+                    batch_size=self.batch_size,
+                    num_workers=self.num_workers,
+                    worker_init_fn=zarrdataset_worker_init_fn,
+                    pin_memory=True,
+                )
+            for dataset in self.individual_datasets
+        ]
 
     def get_dataloader(self) -> DataLoader:
         """
@@ -202,4 +262,4 @@ class ZarrDatasets:
         int
             Total number of samples.
         """
-        return len(self.zarr_datasets)
+        return len(self.individual_datasets)
