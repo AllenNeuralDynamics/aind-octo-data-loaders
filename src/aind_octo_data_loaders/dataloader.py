@@ -2,9 +2,10 @@
 Concatenated zarr iterable dataset
 """
 
-from typing import Callable, List, Optional, Union
+from typing import Callable, List, Optional, Union, Dict
 
 from torch.utils.data import ChainDataset, DataLoader
+from torch.utils.data.distributed import DistributedSampler
 from zarrdataset import (
     ImagesDatasetSpecs,
     PatchSampler,
@@ -61,6 +62,7 @@ class ZarrDatasets:
         num_workers: int = 4,
         return_positions: bool = False,
         return_worker_id: bool = False,
+        dataloader_kwargs: Optional[Dict] = None,
     ):
         self.dataset_paths = dataset_paths
         self.axes = axes
@@ -70,8 +72,9 @@ class ZarrDatasets:
         self.shuffle = shuffle
         self.batch_size = batch_size
         self.num_workers = num_workers
-        self.return_positions=return_positions
-        self.return_worker_id=return_worker_id
+        self.return_positions = return_positions
+        self.return_worker_id = return_worker_id
+        self.dataloader_kwargs = dataloader_kwargs
 
         # Ensure dataset_paths and dataset_scales have the same length
         if len(dataset_paths) != len(dataset_scales):
@@ -88,7 +91,9 @@ class ZarrDatasets:
         self.patch_sampler = self._create_patch_sampler()
         self.individual_datasets = self._create_datasets()
         self.zarr_datasets = ChainDataset(self.individual_datasets)
-        self.dataloader = self._create_dataloader()
+        self.dataloader = self._create_dataloader(
+            **self.dataloader_kwargs
+        )
 
     def _create_patch_sampler(self) -> PatchSampler:
         """
@@ -153,7 +158,7 @@ class ZarrDatasets:
 
         return zarr_datasets
 
-    def _create_dataloader(self) -> DataLoader:
+    def _create_dataloader(self, **kwargs) -> DataLoader:
         """
         Create a PyTorch DataLoader for the combined datasets.
 
@@ -162,13 +167,12 @@ class ZarrDatasets:
         DataLoader
             Configured DataLoader for batch processing.
         """
-
         return DataLoader(
             self.zarr_datasets,
             batch_size=self.batch_size,
             num_workers=self.num_workers,
             worker_init_fn=chained_zarrdataset_worker_init_fn,
-            pin_memory=True,
+            **kwargs # Pass optional arguments
         )
 
     def get_dataloader(self) -> DataLoader:
