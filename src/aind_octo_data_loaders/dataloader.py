@@ -13,6 +13,28 @@ from zarrdataset import (
     zarrdataset_worker_init_fn,
     chained_zarrdataset_worker_init_fn,
 )
+from .utils import extract_wavelengths, get_resolution, read_top_level_zattrs
+
+class CustomZarrDataset(ZarrDataset):
+    def __init__(
+        self,
+        *args,
+        wavelength_nm=None,
+        numerical_aperture=None,
+        image_resolution=None,
+        **kwargs
+    ):
+        super().__init__(*args, **kwargs)
+        self.wavelength_nm = wavelength_nm
+        self.numerical_aperture = numerical_aperture
+        self.image_resolution = image_resolution
+        
+    def __getitem__(self, idx):
+        sample = super().__getitem__(idx)
+        sample['wavelength_nm'] = self.wavelength_nm
+        sample['numerical_aperture'] = self.numerical_aperture
+        sample['image_resolution'] = self.image_resolution
+        return sample
 
 
 class ZarrDatasets:
@@ -179,9 +201,13 @@ class ZarrDatasets:
             # Validate dataset path
             # if not os.path.exists(dataset_path):
             #     raise FileNotFoundError(f"Dataset path not found: {dataset_path}")
-
+            
+            ex, em = extract_wavelengths(dataset_path)
+            zattrs = read_top_level_zattrs(dataset_path, anon=True)
+            resolution = get_resolution(zattrs, self.dataset_scales[i])
+            
             zarr_datasets.append(
-                ZarrDataset(
+                CustomZarrDataset(
                     dataset_specs=[
                         ImagesDatasetSpecs(
                             filenames=[dataset_path],
@@ -195,7 +221,9 @@ class ZarrDatasets:
                     shuffle=self.shuffle,
                     return_positions=self.return_positions,
                     return_worker_id=self.return_worker_id,
-
+                    wavelength_nm=ex,
+                    numerical_aperture=1.4,
+                    image_resolution=resolution,
                 )
             )
 

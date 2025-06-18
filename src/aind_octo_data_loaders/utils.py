@@ -6,6 +6,43 @@ import boto3
 import matplotlib.pyplot as plt
 import zarr
 import numpy as np
+import json
+import fsspec
+import re
+
+def read_top_level_zattrs(zarr_path, anon=True):
+    # Remove the pyramid level if present (e.g., /2)
+    if zarr_path.endswith('/'):
+        zarr_path = zarr_path[:-1]
+    parts = zarr_path.split('/')
+    if parts[-1].isdigit():
+        top_level_path = '/'.join(parts[:-1])
+    else:
+        top_level_path = zarr_path
+
+    mapper = fsspec.get_mapper(top_level_path, anon=anon)
+    group = zarr.open_group(mapper, mode='r')
+    zattrs = group.attrs.asdict()
+    return zattrs
+
+def get_resolution(zattrs, level):
+    level = str(level)
+    datasets = zattrs["multiscales"][0]['datasets']
+    for dset in datasets:
+        if dset['path'] == level:
+            print(dset)
+            return dset['coordinateTransformations'][0]['scale'][-3:]
+
+    return None
+
+def extract_wavelengths(zarr_path):
+    match = re.search(r'Ex_(\d+)_Em_(\d+)\.zarr', zarr_path)
+    if match:
+        ex_wl = int(match.group(1))
+        em_wl = int(match.group(2))
+        return ex_wl, em_wl
+    else:
+        raise ValueError("Wavelengths not found in path")
 
 class Mock3DDataset(torch.utils.data.Dataset):
     def __init__(self, size=100, shape=(64, 64, 64)):
