@@ -64,10 +64,10 @@ class ZarrDatasets:
         num_workers: int = 4,
         return_positions: bool = False,
         return_worker_id: bool = False,
-        dataloader_kwargs: Optional[Dict] = None,
         return_dataset_paths: bool = False,
         return_dataset_scales: bool = False,
         sampler_type: Literal["patch","bluenoise"] = "patch",
+        **kwargs: Dict[str, Union[str, int, bool, Callable]]
     ):
         self.dataset_paths = dataset_paths
         self.axes = axes
@@ -79,7 +79,6 @@ class ZarrDatasets:
         self.num_workers = num_workers
         self.return_positions = return_positions
         self.return_worker_id = return_worker_id
-        self.dataloader_kwargs = dataloader_kwargs
         self.return_dataset_paths = return_dataset_paths
         self.return_dataset_scales = return_dataset_scales
         self.sampler_type = sampler_type
@@ -94,7 +93,7 @@ class ZarrDatasets:
         self.individual_datasets = []
         self._initialize_datasets()
 
-    def _initialize_datasets(self):
+    def _initialize_datasets(self, **kwargs):
         """Initialize the patch sampler and create the datasets."""
         if self.sampler_type == "patch":
             self.sampler = self._create_patch_sampler()
@@ -107,10 +106,8 @@ class ZarrDatasets:
             )
         self.individual_datasets = self._create_datasets()
         self.zarr_datasets = ChainDataset(self.individual_datasets)
-        self.dataloader = self._create_dataloader(
-            **self.dataloader_kwargs
-        )
-        self.individual_dataloaders = self._create_individual_dataloaders()
+        self.dataloader = self._create_dataloader(**kwargs)
+        # self.individual_dataloaders = self._create_individual_dataloaders()
 
     def _create_patch_sampler(self) -> PatchSampler:
         """
