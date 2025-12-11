@@ -70,7 +70,8 @@ def main():
     Example usage of the ZarrDatasets class.
     """
     # setup multi-device ranking
-    rank, world_size, local_rank = setup()
+    # rank, world_size, local_rank = setup()
+    rank, local_rank, world_size = 0, 0, 1
     device = torch.device(f"cuda:{local_rank}")
     print(f"Using device: {rank}/{world_size-1} (Local rank: {local_rank})")
 
@@ -80,7 +81,24 @@ def main():
     print(f"Configuration: {cfg}")
 
     # parse dataset paths
-    dataset_paths = [f"{cfg['dataset']['bucket_path']}/{i}" for i in cfg["dataset"]["train"]["paths"]]
+    dataset_paths = [
+        (
+            "s3://aind-open-data/SmartSPIM_774928_2024-12-17_17-41-54_stitched_2025-01-11_01-02-44/image_tile_fusing/OMEZarr/Ex_639_Em_667.zarr",
+            # "s3://aind-msma-morphology-data/test_data/SmartSPIM/smartspim_segmentation_masks/SmartSPIM_774928/segmentation_mask.zarr",
+            None
+        ),
+        (
+            "s3://aind-open-data/SmartSPIM_764220_2025-01-30_11-15-58_stitched_2025-03-06_10-04-25/image_tile_fusing/OMEZarr/Ex_639_Em_680.zarr",
+            # "s3://aind-msma-morphology-data/test_data/SmartSPIM/smartspim_segmentation_masks/SmartSPIM_764220/segmentation_mask.zarr"
+            None
+        ),
+        (
+            "s3://aind-open-data/SmartSPIM_782499_2025-03-06_00-01-19_stitched_2025-03-07_05-11-31/image_tile_fusing/OMEZarr/Ex_639_Em_680.zarr",
+            # "s3://aind-msma-morphology-data/test_data/SmartSPIM/smartspim_segmentation_masks/SmartSPIM_782499/segmentation_mask.zarr"
+            None
+        ),
+    ]
+
     print("Using datasets: ", dataset_paths)
     
     # Configure dataset scales 
@@ -120,12 +138,20 @@ def main():
             if i >= 2:  # Process only 2 batches for demonstration
                 break
 
+            data_batch = batch['data']
+            wavelength_nm = batch['wavelength_nm']
+            numerical_aperture = batch['numerical_aperture']
+            image_resolution = batch['image_resolution']
+
             # Unpack batch data based on ZarrDataset's return structure
-            worker_ids, positions, data = batch
+            worker_ids, positions, data = data_batch
 
             print(f"\n\tBatch {i+1}:")
             print(f"\tRank: {rank}/{world_size}")
             print(f"\tImages shape: {data.shape}")
+            print(f"\tImage wavelength: {wavelength_nm}")
+            print(f"\tImage NA: {numerical_aperture}")
+            print(f"\tImage resolution: {image_resolution}")
             print(f"\tPositions: {positions}")
             print(f"\tWorker IDs: {worker_ids}")
 

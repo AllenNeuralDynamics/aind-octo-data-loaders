@@ -8,12 +8,16 @@ from torch.utils.data import ChainDataset, DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from zarrdataset import (
     ImagesDatasetSpecs,
+    MasksDatasetSpecs,
     PatchSampler,
     BlueNoisePatchSampler,
     ZarrDataset,
     zarrdataset_worker_init_fn,
     chained_zarrdataset_worker_init_fn,
 )
+from zarrdataset._zarrdataset import ImageSample, get_ddp_info
+import random
+import numpy as np
 from .utils import extract_wavelengths, get_resolution, read_top_level_zattrs
 
 class CustomZarrDataset(ZarrDataset):
@@ -29,13 +33,118 @@ class CustomZarrDataset(ZarrDataset):
         self.wavelength_nm = wavelength_nm
         self.numerical_aperture = numerical_aperture
         self.image_resolution = image_resolution
-        
+    
+    def __iter__(self):
+        # Preload the files and masks associated with them
+        self._initialize()
+
+        samples = [
+            ImageSample(im_id, chk_id, shuffle=self._shuffle)
+            for im_id in range(len(self._arr_lists))
+            for chk_id in range(len(self._toplefts[im_id]))
+        ]
+
+        # Add sharding here
+        rank, world_size = get_ddp_info()
+        samples = [s for i, s in enumerate(samples) if i % world_size == rank]
+
+        # Shuffle chunks here if samples will come from the same chunk until
+        # they are depleted.
+        if self._shuffle and self._draw_same_chunk:
+            random.shuffle(samples)
+
+        prev_im_id = -1
+        prev_chk_id = -1
+        prev_chk = -1
+        curr_chk = 0
+        self._curr_collection = None
+
+        while samples:
+            # Shuffle chunks here if samples can come from different chunks.
+            if self._shuffle and not self._draw_same_chunk:
+                curr_chk = random.randrange(0, len(samples))
+
+            im_id = samples[curr_chk].im_id
+            chk_id = samples[curr_chk].chk_id
+
+            chunk_tlbr = self._toplefts[im_id][chk_id]
+
+            # If this sample is from a different image or chunk, free the
+            # previous sample and re-sample the patches from the current chunk.
+            if prev_im_id != im_id or chk_id != prev_chk_id:
+                if prev_chk >= 0:
+                    # Free the patch ordering from the previous chunk to save
+                    # memory.
+                    samples[prev_chk].free_sampler()
+
+                prev_chk = curr_chk
+                prev_chk_id = chk_id
+
+                if prev_im_id != im_id:
+                    prev_im_id = im_id
+                    self._curr_collection = self._arr_lists[im_id]
+
+                if self._patch_sampler is not None:
+                    patches_tls = self._patch_sampler.compute_patches(
+                        self._curr_collection,
+                        chunk_tlbr
+                    )
+
+                else:
+                    patches_tls = [chunk_tlbr]
+
+                samples[curr_chk].num_patches = len(patches_tls)
+
+                if not len(patches_tls):
+                    samples.pop(curr_chk)
+                    prev_chk = -1
+                    continue
+
+            # # Initialize the count of top-left positions for patches inside
+            # # this chunk.
+            curr_patch, is_empty = samples[curr_chk].next_patch()
+
+            # When all possible patches have been extracted from the current
+            # chunk, remove that chunk from the list of samples.
+            if is_empty:
+                samples.pop(curr_chk)
+                prev_chk = -1
+
+            patch_tlbr = patches_tls[curr_patch]
+            itemized = self.__getitem__(patch_tlbr)
+            patches = itemized['data']
+
+            if self._return_positions:
+                pos = [
+                    [patch_tlbr[ax].start
+                     if patch_tlbr[ax].start is not None else 0,
+                     patch_tlbr[ax].stop
+                     if patch_tlbr[ax].stop is not None else -1
+                     ] if ax in patch_tlbr else [0, -1]
+                    for ax in self._collections[self._ref_mod][0]["axes"]
+                ]
+                patches = [np.array(pos, dtype=np.int64)] + patches
+
+            if self._return_worker_id:
+                wid = [np.array(self._worker_id, dtype=np.int64)]
+                patches = wid + patches
+
+            if len(patches) > 1:
+                patches = tuple(patches)
+            else:
+                patches = patches[0]
+
+            itemized['data'] = patches
+            yield itemized
+    
     def __getitem__(self, idx):
         sample = super().__getitem__(idx)
-        sample['wavelength_nm'] = self.wavelength_nm
-        sample['numerical_aperture'] = self.numerical_aperture
-        sample['image_resolution'] = self.image_resolution
-        return sample
+        return {
+            'data': sample,
+            'wavelength_nm': self.wavelength_nm,
+            'numerical_aperture': self.numerical_aperture,
+            'image_resolution': self.image_resolution,
+        }
 
 
 class ZarrDatasets:
@@ -199,35 +308,60 @@ class ZarrDatasets:
             List of initialized ZarrDataset objects.
         """
         zarr_datasets = []
-        for i, dataset_path in enumerate(self.dataset_paths):
+        for i, (dataset_path, dataset_mask) in enumerate(self.dataset_paths):
+            
             # Validate dataset path
             # if not os.path.exists(dataset_path):
             #     raise FileNotFoundError(f"Dataset path not found: {dataset_path}")
             
-            ex, em = extract_wavelengths(dataset_path)
-            zattrs = read_top_level_zattrs(dataset_path, anon=True)
-            resolution = get_resolution(zattrs, self.dataset_scales[i])
-            
-            zarr_datasets.append(
-                CustomZarrDataset(
-                    dataset_specs=[
-                        ImagesDatasetSpecs(
-                            filenames=[dataset_path],
-                            modality="images",
+            # ex, em = extract_wavelengths(dataset_path)
+            # zattrs = read_top_level_zattrs(dataset_path, anon=True)
+            # resolution = get_resolution(zattrs, self.dataset_scales[i])
+
+            try:
+                dataset_specs = [
+                    ImagesDatasetSpecs(
+                        filenames=[dataset_path],
+                        modality="images",
+                        source_axes=self.axes,
+                        data_group=str(self.dataset_scales[i]),
+                        transform=None,#self.transform,
+                    )
+                ]
+
+                if dataset_mask:
+                    dataset_specs.append(
+                        MasksDatasetSpecs(
+                            filenames=[dataset_mask],
+                            modality="masks",
                             source_axes=self.axes,
                             data_group=str(self.dataset_scales[i]),
-                            transform=self.transform,
+                            # transform=self.transform,
                         )
-                    ],
-                    patch_sampler=self.sampler,
-                    shuffle=self.shuffle,
-                    return_positions=self.return_positions,
-                    return_worker_id=self.return_worker_id,
-                    wavelength_nm=ex,
-                    numerical_aperture=1.4,
-                    image_resolution=resolution,
+                    )
+
+                zarr_datasets.append(
+                    ZarrDataset(
+                        dataset_specs=dataset_specs,
+                        patch_sampler=self.sampler,
+                        shuffle=self.shuffle,
+                        return_positions=self.return_positions,
+                        return_worker_id=self.return_worker_id,
+                    )
                 )
-            )
+            
+            except Exception as e:
+                print(f"Error loading {dataset_path} at scale {self.dataset_scales[i]}. Error: {e}")
+            # CustomZarrDataset(
+            #     dataset_specs=dataset_specs,
+            #     patch_sampler=self.sampler,
+            #     shuffle=self.shuffle,
+            #     return_positions=self.return_positions,
+            #     return_worker_id=self.return_worker_id,
+            #     wavelength_nm=ex,
+            #     numerical_aperture=1.4,
+            #     image_resolution=resolution,
+            # )
 
         return zarr_datasets
 
@@ -292,3 +426,15 @@ class ZarrDatasets:
             Total number of samples.
         """
         return len(self.individual_datasets)
+
+    def __getitem__(self, idx):
+        """
+        Override to get item from the combined dataset.
+        """
+        sample = super().__getitem__(idx)
+        
+        if self.transform:
+            sample = self.transform({"image": sample})["image"]
+        
+        sample = np.squeeze(sample)
+        return sample.astype(np.float32)

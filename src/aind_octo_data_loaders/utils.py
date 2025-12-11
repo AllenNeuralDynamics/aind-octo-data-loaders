@@ -30,7 +30,6 @@ def get_resolution(zattrs, level):
     datasets = zattrs["multiscales"][0]['datasets']
     for dset in datasets:
         if dset['path'] == level:
-            print(dset)
             return dset['coordinateTransformations'][0]['scale'][-3:]
 
     return None
@@ -41,8 +40,8 @@ def extract_wavelengths(zarr_path):
         ex_wl = int(match.group(1))
         em_wl = int(match.group(2))
         return ex_wl, em_wl
-    else:
-        raise ValueError("Wavelengths not found in path")
+    
+    return None, None
 
 class Mock3DDataset(torch.utils.data.Dataset):
     def __init__(self, size=100, shape=(64, 64, 64)):
