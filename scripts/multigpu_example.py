@@ -12,6 +12,7 @@ from torch.utils.data import DataLoader, DistributedSampler
 
 from aind_octo_data_loaders.dataloader import ZarrDatasets
 
+
 def setup():
     dist.init_process_group("nccl")
     rank = int(os.environ["RANK"])

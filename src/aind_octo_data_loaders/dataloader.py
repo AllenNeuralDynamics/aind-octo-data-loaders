@@ -2,23 +2,25 @@
 Concatenated zarr iterable dataset
 """
 
-from typing import Callable, List, Optional, Union, Dict, Literal
+import random
+from typing import Callable, Dict, List, Literal, Optional, Union
 
+import numpy as np
 from torch.utils.data import ChainDataset, DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from zarrdataset import (
+    BlueNoisePatchSampler,
     ImagesDatasetSpecs,
     MasksDatasetSpecs,
     PatchSampler,
-    BlueNoisePatchSampler,
     ZarrDataset,
-    zarrdataset_worker_init_fn,
     chained_zarrdataset_worker_init_fn,
+    zarrdataset_worker_init_fn,
 )
 from zarrdataset._zarrdataset import ImageSample, get_ddp_info
-import random
-import numpy as np
+
 from .utils import extract_wavelengths, get_resolution, read_top_level_zattrs
+
 
 class CustomZarrDataset(ZarrDataset):
     def __init__(
@@ -27,13 +29,13 @@ class CustomZarrDataset(ZarrDataset):
         wavelength_nm=None,
         numerical_aperture=None,
         image_resolution=None,
-        **kwargs
+        **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self.wavelength_nm = wavelength_nm
         self.numerical_aperture = numerical_aperture
         self.image_resolution = image_resolution
-    
+
     def __iter__(self):
         # Preload the files and masks associated with them
         self._initialize()
@@ -86,8 +88,7 @@ class CustomZarrDataset(ZarrDataset):
 
                 if self._patch_sampler is not None:
                     patches_tls = self._patch_sampler.compute_patches(
-                        self._curr_collection,
-                        chunk_tlbr
+                        self._curr_collection, chunk_tlbr
                     )
 
                 else:
@@ -112,15 +113,26 @@ class CustomZarrDataset(ZarrDataset):
 
             patch_tlbr = patches_tls[curr_patch]
             itemized = self.__getitem__(patch_tlbr)
-            patches = itemized['data']
+            patches = itemized["data"]
 
             if self._return_positions:
                 pos = [
-                    [patch_tlbr[ax].start
-                     if patch_tlbr[ax].start is not None else 0,
-                     patch_tlbr[ax].stop
-                     if patch_tlbr[ax].stop is not None else -1
-                     ] if ax in patch_tlbr else [0, -1]
+                    (
+                        [
+                            (
+                                patch_tlbr[ax].start
+                                if patch_tlbr[ax].start is not None
+                                else 0
+                            ),
+                            (
+                                patch_tlbr[ax].stop
+                                if patch_tlbr[ax].stop is not None
+                                else -1
+                            ),
+                        ]
+                        if ax in patch_tlbr
+                        else [0, -1]
+                    )
                     for ax in self._collections[self._ref_mod][0]["axes"]
                 ]
                 patches = [np.array(pos, dtype=np.int64)] + patches
@@ -134,16 +146,16 @@ class CustomZarrDataset(ZarrDataset):
             else:
                 patches = patches[0]
 
-            itemized['data'] = patches
+            itemized["data"] = patches
             yield itemized
-    
+
     def __getitem__(self, idx):
         sample = super().__getitem__(idx)
         return {
-            'data': sample,
-            'wavelength_nm': self.wavelength_nm,
-            'numerical_aperture': self.numerical_aperture,
-            'image_resolution': self.image_resolution,
+            "data": sample,
+            "wavelength_nm": self.wavelength_nm,
+            "numerical_aperture": self.numerical_aperture,
+            "image_resolution": self.image_resolution,
         }
 
 
@@ -197,8 +209,8 @@ class ZarrDatasets:
         return_worker_id: bool = False,
         return_dataset_paths: bool = False,
         return_dataset_scales: bool = False,
-        sampler_type: Literal["patch","bluenoise"] = "patch",
-        **kwargs: Dict[str, Union[str, int, bool, Callable]]
+        sampler_type: Literal["patch", "bluenoise"] = "patch",
+        **kwargs: Dict[str, Union[str, int, bool, Callable]],
     ):
         self.dataset_paths = dataset_paths
         self.axes = axes
@@ -267,7 +279,7 @@ class ZarrDatasets:
                 X=self.patch_size_zyx[2],
             )
         )
-    
+
     def _create_blue_noise_patch_sampler(self) -> BlueNoisePatchSampler:
         """
         Create a blue noise patch sampler with the specified patch dimensions.
@@ -289,13 +301,13 @@ class ZarrDatasets:
             )
 
         return BlueNoisePatchSampler(
-            patch_size = dict(
+            patch_size=dict(
                 Z=self.patch_size_zyx[0],
                 Y=self.patch_size_zyx[1],
                 X=self.patch_size_zyx[2],
             ),
-            resample_positions = False,
-            allow_overlap = True,
+            resample_positions=False,
+            allow_overlap=True,
         )
 
     def _create_datasets(self) -> List[ZarrDataset]:
@@ -309,11 +321,11 @@ class ZarrDatasets:
         """
         zarr_datasets = []
         for i, (dataset_path, dataset_mask) in enumerate(self.dataset_paths):
-            
+
             # Validate dataset path
             # if not os.path.exists(dataset_path):
             #     raise FileNotFoundError(f"Dataset path not found: {dataset_path}")
-            
+
             # ex, em = extract_wavelengths(dataset_path)
             # zattrs = read_top_level_zattrs(dataset_path, anon=True)
             # resolution = get_resolution(zattrs, self.dataset_scales[i])
@@ -325,7 +337,7 @@ class ZarrDatasets:
                         modality="images",
                         source_axes=self.axes,
                         data_group=str(self.dataset_scales[i]),
-                        transform=None,#self.transform,
+                        transform=None,  # self.transform,
                     )
                 ]
 
@@ -349,9 +361,11 @@ class ZarrDatasets:
                         return_worker_id=self.return_worker_id,
                     )
                 )
-            
+
             except Exception as e:
-                print(f"Error loading {dataset_path} at scale {self.dataset_scales[i]}. Error: {e}")
+                print(
+                    f"Error loading {dataset_path} at scale {self.dataset_scales[i]}. Error: {e}"
+                )
             # CustomZarrDataset(
             #     dataset_specs=dataset_specs,
             #     patch_sampler=self.sampler,
@@ -379,18 +393,18 @@ class ZarrDatasets:
             batch_size=self.batch_size,
             num_workers=self.num_workers,
             worker_init_fn=chained_zarrdataset_worker_init_fn,
-            **kwargs # Pass optional arguments
+            **kwargs,  # Pass optional arguments
         )
-    
+
     def _create_individual_dataloaders(self) -> List[DataLoader]:
         return [
             DataLoader(
-                    dataset,
-                    batch_size=self.batch_size,
-                    num_workers=self.num_workers,
-                    worker_init_fn=zarrdataset_worker_init_fn,
-                    pin_memory=True,
-                )
+                dataset,
+                batch_size=self.batch_size,
+                num_workers=self.num_workers,
+                worker_init_fn=zarrdataset_worker_init_fn,
+                pin_memory=True,
+            )
             for dataset in self.individual_datasets
         ]
 
@@ -432,9 +446,9 @@ class ZarrDatasets:
         Override to get item from the combined dataset.
         """
         sample = super().__getitem__(idx)
-        
+
         if self.transform:
             sample = self.transform({"image": sample})["image"]
-        
+
         sample = np.squeeze(sample)
         return sample.astype(np.float32)

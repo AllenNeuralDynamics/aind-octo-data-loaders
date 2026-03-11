@@ -1,14 +1,17 @@
 """
 Declaration of the MultiSourceIterableDataset
 """
-from torch.utils.data import IterableDataset
+
 from typing import List
+
+from torch.utils.data import IterableDataset
 
 
 class MultiSourceIterableDataset(IterableDataset):
     """
     Class that combines multiple datasets into one iterable dataset.
     """
+
     def __init__(self, datasets: List[IterableDataset]):
         """
         Initialize the MultiSourceIterableDataset.
