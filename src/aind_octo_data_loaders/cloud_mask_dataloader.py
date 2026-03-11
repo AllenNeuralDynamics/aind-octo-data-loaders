@@ -239,6 +239,7 @@ class MaskedZarrDataset(ZarrDataset):
         cache_lock_timeout=600,
         cache_lock_poll_interval=1.0,
         prefilter_in_workers=False,
+        minimum_occupied_volume=0.7,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -251,6 +252,8 @@ class MaskedZarrDataset(ZarrDataset):
         self.cache_lock_timeout = cache_lock_timeout
         self.cache_lock_poll_interval = cache_lock_poll_interval
         self.prefilter_in_workers = prefilter_in_workers
+        # for block_prefilter: minimum fraction of block that must be valid to keep it
+        self.minimum_occupied_volume = minimum_occupied_volume
 
         if downsampled_mask_level is None:
             downsampled_mask_level = self.scale + 2  # default offset
@@ -461,15 +464,19 @@ class MaskedZarrDataset(ZarrDataset):
                 : y_blocks * v_coarse,
                 : x_blocks * v_coarse,
             ]
-            block_max = (
-                trimmed.reshape(
+
+            # Fraction of voxels per block that are above mask_threshold.
+            # Blocks must have at least minimum_occupied_volume fraction occupied.
+            block_occ = (
+                (trimmed >= self.mask_threshold)
+                .astype(np.float32)
+                .reshape(
                     z_blocks, v_coarse, y_blocks, v_coarse, x_blocks, v_coarse
                 )
-                .max(axis=(1, 3, 5))
+                .mean(axis=(1, 3, 5))
                 .compute()
             )
-            # Condition to make block pass
-            coarse_passed = np.argwhere(block_max >= self.mask_threshold)
+            coarse_passed = np.argwhere(block_occ >= self.minimum_occupied_volume)
 
             if len(coarse_passed) == 0:
                 print(
