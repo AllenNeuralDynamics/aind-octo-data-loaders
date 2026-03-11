@@ -1,10 +1,5 @@
 """
 Multiscale Masked Zarr DataLoader.
-
-Combines:
-- MaskedZarrDataset  (cloud-mask filtering, caching, lazy init)
-- Multiscale context loading  (same pixel-size patches at every pyramid level,
-  high-res patch centred inside downsampled context patches)
 """
 
 from __future__ import annotations
