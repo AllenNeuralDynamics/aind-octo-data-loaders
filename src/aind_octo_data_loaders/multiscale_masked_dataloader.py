@@ -11,6 +11,7 @@ import numpy as np
 from aind_large_scale_prediction.io import OMEZarrReader
 
 from aind_octo_data_loaders.cloud_mask_dataloader import MaskedZarrDataset
+from aind_octo_data_loaders.utils import get_resolution, read_top_level_zattrs
 
 
 def _compute_scale_factors(
@@ -76,10 +77,9 @@ class MultiScaleMaskedDataset(MaskedZarrDataset):
     Returns
     -------
     dict with keys:
-        images      : dict[level -> np.ndarray]  shape (Z, Y, X) for every level
-        coords      : dict[level -> (z_slice, y_slice, x_slice)]
-                      absolute pixel slices in each level's coordinate space
-        base_coords : (z_slice, y_slice, x_slice) in base-level pixel space
+        images           : np.ndarray (N_levels, 1, Z, Y, X)  float32
+        batch_resolutions: np.ndarray (N_levels, 3)  physical voxel spacing (z,y,x)
+        bounding_boxes   : np.ndarray (N_levels, 2, 3)  world-space bbox [[min],[max]]
         sample, platform, scale : forwarded from parent
     """
 
@@ -101,8 +101,6 @@ class MultiScaleMaskedDataset(MaskedZarrDataset):
             )
 
         # Load a lazy dask array for every pyramid level.
-        # The base level is already in self.datasets["volume"] (xarray), but we
-        # also keep a raw dask array here for shape queries.
         self.ms_lazy_arrays: Dict[int, da.Array] = {}
         for lvl in self.pyramid_levels:
             reader = OMEZarrReader(
@@ -121,6 +119,27 @@ class MultiScaleMaskedDataset(MaskedZarrDataset):
             for lvl in self.pyramid_levels
         }
 
+        # Physical voxel resolution (z, y, x) per pyramid level.
+        # Read from OME-Zarr coordinateTransformations; fall back to scale
+        # factors relative to the base level if metadata is unavailable.
+        self.ms_resolutions: Dict[int, Tuple[float, float, float]] = {}
+        try:
+            zattrs = read_top_level_zattrs(self.zarr_file, anon=False)
+            for lvl in self.pyramid_levels:
+                res = get_resolution(zattrs, lvl)
+                if res is not None:
+                    self.ms_resolutions[lvl] = tuple(float(r) for r in res)
+        except Exception:
+            pass  # fall through to factor-based fallback below
+
+        # This is a fallback in case metadata is missing or malformed.
+        # It ensures we always have some resolution values to work with.
+        # Ideally, all datasets must pass through the OME-Zarr metadata
+        for lvl in self.pyramid_levels:
+            if lvl not in self.ms_resolutions:
+                factors = self.ms_scale_factors[lvl]
+                self.ms_resolutions[lvl] = tuple(float(f) for f in factors)
+
     def __getitem__(self, idx: int) -> dict:
         # Ensure mask filtering has run (lazy, cached, distributed-safe).
         self._ensure_filtered()
@@ -133,9 +152,6 @@ class MultiScaleMaskedDataset(MaskedZarrDataset):
 
         batch = self.batch_generator[batch_idx]
 
-        # ZarrDataset builds the DataArray with coords {"Z": np.arange(shape[2]), ...}
-        # so batch.coords["Z"].values[0] is the absolute start pixel in the
-        # padded base-level array.
         v = self.volume_size
         origin = {
             dim: int(batch.coords[dim].values[0]) for dim in ["Z", "Y", "X"]
@@ -146,37 +162,58 @@ class MultiScaleMaskedDataset(MaskedZarrDataset):
             slice(origin["X"], origin["X"] + v),
         )
 
-        images: Dict[int, np.ndarray] = {}
-        coords: Dict[int, Tuple[slice, slice, slice]] = {}
+        level_images = []
+        level_resolutions = []
+        level_bboxes = []
+        level_coords = []
 
         for lvl in self.pyramid_levels:
             arr = self.ms_lazy_arrays[lvl]
             arr_shape = arr.shape[-3:]
             factors = self.ms_scale_factors[lvl]
+            res = self.ms_resolutions[lvl]
 
             if lvl == self.scale:
-                # Base level: xbatcher already loaded this data.
-                images[lvl] = np.squeeze(batch["volume"].values)
-                coords[lvl] = base_coords
-
+                img = np.squeeze(batch["volume"].values)
+                lvl_coords = base_coords
             else:
-                # Downsampled level: derive where the HR patch falls in this
-                # level's pixel space, then build a same-size context window.
                 scaled = _scale_slices(base_coords, factors)
-
-                ctx: Tuple[slice, slice, slice] = tuple(  # type: ignore[assignment]
+                lvl_coords: Tuple[slice, slice, slice] = tuple(  # type: ignore[assignment]
                     _centered_context_slice((s.start + s.stop) // 2, v, sz)
                     for s, sz in zip(scaled, arr_shape)
                 )
-                coords[lvl] = ctx
+                level_slice = _build_level_slice(arr.ndim, lvl_coords)
+                img = np.squeeze(arr[level_slice].compute())
 
-                level_slice = _build_level_slice(arr.ndim, ctx)
-                images[lvl] = np.squeeze(arr[level_slice].compute())
+            bbox = np.array(
+                [
+                    [lvl_coords[i].start * res[i] for i in range(3)],
+                    [lvl_coords[i].stop * res[i] for i in range(3)],
+                ],
+                dtype=np.float32,
+            )  # (2, 3): [[z_min, y_min, x_min], [z_max, y_max, x_max]]
+
+            level_coords.append(
+                np.array(
+                    [
+                        [lvl_coords[i].start for i in range(3)],
+                        [lvl_coords[i].stop for i in range(3)],
+                    ],
+                    dtype=np.int32,
+                )
+            )
+
+            level_images.append(
+                img[np.newaxis].astype(np.float32)
+            )  # (1, Z, Y, X)
+            level_resolutions.append(np.array(res, dtype=np.float32))  # (3,)
+            level_bboxes.append(bbox)  # (2, 3)
 
         return {
-            "images": images,
-            "coords": coords,
-            "base_coords": base_coords,
+            "images": np.stack(level_images, axis=0),  # (N_levels, 1, Z, Y, X)
+            "batch_resolutions": np.stack(level_resolutions),  # (N_levels, 3)
+            "world_coords": np.stack(level_bboxes),  # (N_levels, 2, 3)
+            "voxel_coords": np.stack(level_coords),  # (N_levels, 2, 3)
             "sample": self.sample,
             "platform": self.platform,
             "scale": self.scale,

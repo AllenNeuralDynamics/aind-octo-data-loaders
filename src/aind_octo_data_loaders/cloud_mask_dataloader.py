@@ -476,7 +476,9 @@ class MaskedZarrDataset(ZarrDataset):
                 .mean(axis=(1, 3, 5))
                 .compute()
             )
-            coarse_passed = np.argwhere(block_occ >= self.minimum_occupied_volume)
+            coarse_passed = np.argwhere(
+                block_occ >= self.minimum_occupied_volume
+            )
 
             if len(coarse_passed) == 0:
                 print(
