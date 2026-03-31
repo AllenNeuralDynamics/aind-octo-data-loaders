@@ -7,7 +7,6 @@ from typing import Callable, Dict, List, Literal, Optional, Union
 
 import numpy as np
 from torch.utils.data import ChainDataset, DataLoader
-from torch.utils.data.distributed import DistributedSampler
 from zarrdataset import (
     BlueNoisePatchSampler,
     ImagesDatasetSpecs,
@@ -19,8 +18,6 @@ from zarrdataset import (
 )
 from zarrdataset._zarrdataset import ImageSample, get_ddp_info
 
-from .utils import extract_wavelengths, get_resolution, read_top_level_zattrs
-
 
 class CustomZarrDataset(ZarrDataset):
     def __init__(
@@ -31,6 +28,9 @@ class CustomZarrDataset(ZarrDataset):
         image_resolution=None,
         **kwargs,
     ):
+        """
+        Custom ZarrDataset with additional metadata for wavelength, numerical aperture, and image resolution.
+        """
         super().__init__(*args, **kwargs)
         self.wavelength_nm = wavelength_nm
         self.numerical_aperture = numerical_aperture
@@ -119,16 +119,8 @@ class CustomZarrDataset(ZarrDataset):
                 pos = [
                     (
                         [
-                            (
-                                patch_tlbr[ax].start
-                                if patch_tlbr[ax].start is not None
-                                else 0
-                            ),
-                            (
-                                patch_tlbr[ax].stop
-                                if patch_tlbr[ax].stop is not None
-                                else -1
-                            ),
+                            (patch_tlbr[ax].start if patch_tlbr[ax].start is not None else 0),
+                            (patch_tlbr[ax].stop if patch_tlbr[ax].stop is not None else -1),
                         ]
                         if ax in patch_tlbr
                         else [0, -1]
@@ -321,7 +313,6 @@ class ZarrDatasets:
         """
         zarr_datasets = []
         for i, (dataset_path, dataset_mask) in enumerate(self.dataset_paths):
-
             # Validate dataset path
             # if not os.path.exists(dataset_path):
             #     raise FileNotFoundError(f"Dataset path not found: {dataset_path}")

@@ -6,15 +6,66 @@
 ![Interrogate](https://img.shields.io/badge/interrogate-100.0%25-brightgreen)
 ![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen?logo=codecov)
 ![Python](https://img.shields.io/badge/python->=3.10-blue?logo=python)
+## Overview
+This repository provides PyTorch-friendly dataloaders for large, multiscale OME-Zarr datasets used in the AIND OCTO project. The loaders support:
 
+- Patch and volume sampling from multiscale OME-Zarr stores (local or cloud).
+- Mask-aware filtering to exclude empty blocks and focus on regions of interest.
+- Multi-dataset aggregation and distributed sharding.
 
+The package centers around two main workflows:
 
-## Usage
- - To use this template, click the green `Use this template` button and `Create new repository`.
- - After github initially creates the new repository, please wait an extra minute for the initialization scripts to finish organizing the repo.
- - To enable the automatic semantic version increments: in the repository go to `Settings` and `Collaborators and teams`. Click the green `Add people` button. Add `svc-aindscicomp` as an admin. Modify the file in `.github/workflows/tag_and_publish.yml` and remove the if statement in line 65. The semantic version will now be incremented every time a code is committed into the main branch.
- - To publish to PyPI, enable semantic versioning and uncomment the publish block in `.github/workflows/tag_and_publish.yml`. The code will now be published to PyPI every time the code is committed into the main branch.
- - The `.github/workflows/test_and_lint.yml` file will run automated tests and style checks every time a Pull Request is opened. If the checks are undesired, the `test_and_lint.yml` can be deleted. The strictness of the code coverage level, etc., can be modified by altering the configurations in the `pyproject.toml` file and the `.flake8` file.
+- **`aind_octo_data_loaders.dataloader`**: patch-based datasets and loaders built on `zarrdataset`.
+- **`aind_octo_data_loaders.cloud_mask_dataloader`**: block-based loaders with mask filtering using `OMEZarrReader`.
+
+It supports both ZarrV2 and ZarrV3.
+
+## TODO
+- ZarrV3 metadata gathering needs to be done.
+
+## Quickstart
+
+### Patch-based sampling (zarrdataset)
+```python
+from aind_octo_data_loaders.dataloader import ZarrDatasets
+
+datasets = ZarrDatasets(
+  dataset_paths=["/path/to/sample.zarr"],
+  dataset_scales=[0],
+  patch_size_zyx=[128, 128, 128],
+  batch_size=2,
+  shuffle=True,
+  num_workers=4,
+)
+
+for batch in datasets.dataloader:
+  data = batch["data"]
+  # training loop here
+  break
+```
+
+### Masked volume sampling (OME-Zarr)
+```python
+from aind_octo_data_loaders.cloud_mask_dataloader import MaskedZarrDataset
+
+dataset = MaskedZarrDataset(
+  sample="sample_001",
+  zarr_file="s3://bucket/path/sample.zarr",
+  mask_file="s3://bucket/path/mask.zarr",
+  scale=1,
+  volume_size=128,
+  mask_threshold=0.5,
+  block_prefilter=True,
+)
+
+item = dataset[0]
+volume = item["volume"]
+```
+
+## Package Layout
+- **`aind_octo_data_loaders/dataloader.py`**: patch-based loaders and wrappers around `zarrdataset`.
+- **`aind_octo_data_loaders/cloud_mask_dataloader.py`**: mask-aware block sampling with coarse-to-fine filtering.
+- **`aind_octo_data_loaders/utils.py`**: utilities for OME-Zarr metadata, resolution, and S3 helpers.
 
 ## Installation
 To use the software, in the root directory, run

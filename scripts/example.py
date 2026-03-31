@@ -72,18 +72,15 @@ def main():
     # rank, world_size, local_rank = setup()
     rank, local_rank, world_size = 0, 0, 1
     device = torch.device(f"cuda:{local_rank}")
-    print(f"Using device: {rank}/{world_size-1} (Local rank: {local_rank})")
+    print(f"Using device: {rank}/{world_size - 1} (Local rank: {local_rank})")
 
     # load example configuration file
-    config_path = (
-        Path(__file__).resolve().parent.parent
-        / "configs"
-        / "example_data.yaml"
-    )
+    config_path = Path(__file__).resolve().parent.parent / "configs" / "example_data.yaml"
     cfg = load_config(config_path)
     print(f"Configuration: {cfg}")
 
     # parse dataset paths
+    # Ignore flake8 warning about unused variable
     dataset_paths = [
         (
             "s3://aind-open-data/SmartSPIM_774928_2024-12-17_17-41-54_stitched_2025-01-11_01-02-44/image_tile_fusing/OMEZarr/Ex_639_Em_667.zarr",
@@ -148,7 +145,7 @@ def main():
             # Unpack batch data based on ZarrDataset's return structure
             worker_ids, positions, data = data_batch
 
-            print(f"\n\tBatch {i+1}:")
+            print(f"\n\tBatch {i + 1}:")
             print(f"\tRank: {rank}/{world_size}")
             print(f"\tImages shape: {data.shape}")
             print(f"\tImage wavelength: {wavelength_nm}")
@@ -159,9 +156,7 @@ def main():
 
     except FileNotFoundError as e:
         print(f"Error: {e}")
-        print(
-            "This example requires actual Zarr datasets. Replace the paths with valid ones."
-        )
+        print("This example requires actual Zarr datasets. " "Replace the paths with valid ones.")
     except Exception as e:
         print(f"Unexpected error: {e}")
 

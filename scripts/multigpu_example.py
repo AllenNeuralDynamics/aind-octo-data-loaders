@@ -1,3 +1,5 @@
+"""Multi-GPU example for patch-based OME-Zarr loading."""
+
 import logging
 import multiprocessing as mp
 import os
@@ -7,13 +9,12 @@ import torch
 import torch.distributed as dist
 import torchvision
 import zarrdataset as zds
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader, DistributedSampler
 
 from aind_octo_data_loaders.dataloader import ZarrDatasets
 
 
 def setup():
+    """Initialize torch distributed and set CUDA device for the local rank."""
     dist.init_process_group("nccl")
     rank = int(os.environ["RANK"])
     world_size = int(os.environ["WORLD_SIZE"])
@@ -23,6 +24,7 @@ def setup():
 
 
 def setup_logger():
+    """Create a simple stdout logger for multi-process runs."""
     logger = logging.getLogger("my_logger")  # You can name it anything
     logger.setLevel(logging.INFO)  # Set the log level
 
@@ -43,6 +45,7 @@ def setup_logger():
 
 
 def main():
+    """Run a short multi-GPU sampling loop over multiple OME-Zarr datasets."""
     bucket_path = "s3://aind-open-data"
     dataset_paths = [
         "HCR_704576_2024-04-22_13-00-00/SPIM.ome.zarr/R0_X_0000_Y_0003_Z_0000_ch_405.zarr",  # HCR
@@ -52,7 +55,7 @@ def main():
 
     for i, path in enumerate(dataset_paths):
         dataset_paths[i] = f"{bucket_path}/{path}"
-        print(f"Dataset {i+1} path: {dataset_paths[i]}")
+        print(f"Dataset {i + 1} path: {dataset_paths[i]}")
 
     print("Using datasets: ", dataset_paths)
 
@@ -61,9 +64,7 @@ def main():
     patch_size = [64, 64, 64]  # Z, Y, X dimensions
     batch_size = 4
 
-    transforms = torchvision.transforms.Compose(
-        [zds.ToDtype(dtype=np.float16)]
-    )
+    transforms = torchvision.transforms.Compose([zds.ToDtype(dtype=np.float16)])
 
     # Getting local ranks
     rank, world_size, local_rank = setup()

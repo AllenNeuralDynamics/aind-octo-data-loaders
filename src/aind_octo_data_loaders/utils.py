@@ -1,5 +1,9 @@
-import json
+"""
+Utility functions for working with Zarr datasets.
+"""
+
 import re
+from typing import Dict
 
 import boto3
 import fsspec
@@ -11,6 +15,22 @@ import zarr
 
 
 def read_top_level_zattrs(zarr_path, anon=True):
+    """
+    Reads top level zarr attributes from a given zarr path.
+
+    Parameters
+    ----------
+    zarr_path : str
+        Path to the zarr dataset.
+    anon : bool, optional
+        Whether to use anonymous access for S3 (default is True).
+
+    Returns
+    -------
+    dict
+        Dictionary of top-level zarr attributes.
+
+    """
     # Remove the pyramid level if present (e.g., /2)
     if zarr_path.endswith("/"):
         zarr_path = zarr_path[:-1]
@@ -26,7 +46,24 @@ def read_top_level_zattrs(zarr_path, anon=True):
     return zattrs
 
 
-def get_resolution(zattrs, level):
+def get_resolution(zattrs: Dict, level):
+    """
+    Gets resolution from the dictionary zarr attributes
+    for a specific pyramid level.
+
+    Parameters
+    ----------
+    zattrs : dict
+        Dictionary of zarr attributes.
+    level : int or str
+        Pyramid level to get the resolution for.
+
+    Returns
+    -------
+    list or None
+        Resolution of the specified level in Z, Y, X order, or None if not found.
+
+    """
     level = str(level)
     datasets = zattrs["multiscales"][0]["datasets"]
     for dset in datasets:
@@ -37,6 +74,9 @@ def get_resolution(zattrs, level):
 
 
 def extract_wavelengths(zarr_path):
+    """
+    Extract wavelengts from a zarr path in SmartSPIM
+    """
     match = re.search(r"Ex_(\d+)_Em_(\d+)\.zarr", zarr_path)
     if match:
         ex_wl = int(match.group(1))
@@ -47,14 +87,27 @@ def extract_wavelengths(zarr_path):
 
 
 class Mock3DDataset(torch.utils.data.Dataset):
+    """
+    Mock class for a 3D dataset.
+    """
+
     def __init__(self, size=100, shape=(64, 64, 64)):
+        """
+        Init of mock class
+        """
         self.size = size
         self.shape = shape
 
     def __len__(self):
+        """
+        Len of mock class
+        """
         return self.size
 
     def __getitem__(self, idx):
+        """
+        Get item of mock class
+        """
         volume = np.random.rand(*self.shape).astype(np.float32)
         label = np.random.randint(0, 2)
         return torch.tensor(volume), torch.tensor(label), idx
@@ -142,9 +195,7 @@ def list_s3_prefixes(bucket_name, prefix):
 
     # Call the list_objects_v2 API
     s3 = boto3.client("s3")
-    response = s3.list_objects_v2(
-        Bucket=bucket_name, Prefix=prefix, Delimiter="/"
-    )
+    response = s3.list_objects_v2(Bucket=bucket_name, Prefix=prefix, Delimiter="/")
     if "CommonPrefixes" in response:
         return [cp["Prefix"] for cp in response["CommonPrefixes"]]
     else:

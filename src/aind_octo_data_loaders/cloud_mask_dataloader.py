@@ -4,34 +4,59 @@ Reads zarr v2 and v3 formats.
 """
 
 import os
-import random
 import time
+from typing import Optional
 
 import dask.array as da
 import numpy as np
-import pandas as pd
-import torch.distributed as dist
 import xarray as xr
 import xbatcher
 from aind_large_scale_prediction.io import OMEZarrReader
-from torch.utils.data import Dataset, IterableDataset, get_worker_info
-from tqdm import tqdm
+from torch.utils.data import Dataset, get_worker_info
 
 
 class ZarrDataset(Dataset):
+    """Block-based OME-Zarr dataset with optional transforms and mask return."""
+
     def __init__(
         self,
-        sample,
-        zarr_file,
-        scale,
-        volume_size=128,
-        do_pad_array=True,
-        platform=None,
-        overlap_pct=0.0,
-        zarr_version="2.0",
+        sample: str,
+        zarr_file: str,
+        scale: int,
+        volume_size: Optional[int] = 128,
+        do_pad_array: Optional[bool] = True,
+        platform: Optional[str] = None,
+        overlap_pct: Optional[float] = 0.0,
+        zarr_version: Optional[str] = "2.0",
         transform=None,
-        return_mask=False,
+        return_mask: Optional[bool] = False,
     ):
+        """
+        Initializes the zarr dataloader
+
+        Parameters
+        ----------
+        sample : str
+            Sample identifier for the dataset.
+        zarr_file : str
+            Path to the OME-Zarr file.
+        scale : int
+            Scale level to load from the multiscale OME-Zarr.
+        volume_size : Optional[int], default=128
+            Size of the cubic volumes to extract.
+        do_pad_array : Optional[bool], default=True
+            Whether to pad the array to be divisible by volume_size.
+        platform : Optional[str], default=None
+            Platform identifier (e.g., "HCR", "SmartSPIM").
+        overlap_pct : Optional[float], default=0.0
+            Percentage of overlap between adjacent volumes.
+        zarr_version : Optional[str], default="2.0"
+            Zarr version to use ("2.0" or "3.0").
+        transform : callable, default=None
+            Optional transform to apply to each volume.
+        return_mask : Optional[bool], default=False
+            Whether to return a mask along with the volume.
+        """
         self.sample = sample
         self.zarr_file = zarr_file
         self.scale = scale
@@ -56,7 +81,10 @@ class ZarrDataset(Dataset):
 
         self._lazy_init_generator()
 
-    def pad_dask_array(self, dask_array):
+    def pad_dask_array(self, dask_array: xr.DataArray) -> da.Array:
+        """
+        Pad Z,Y,X dimensions to be divisible by volume_size.
+        """
         if len(dask_array.shape) == 5:
             _, _, z, y, x = dask_array.shape
         elif len(dask_array.shape) == 3:
@@ -75,24 +103,26 @@ class ZarrDataset(Dataset):
         ):
             remainder = dim_size % vol_size
             pad = 0 if remainder == 0 else vol_size - remainder
-            pad_widths.append(
-                (0, pad)
-            )  # only pad at the end of each dimension
+            pad_widths.append((0, pad))  # only pad at the end of each dimension
         full_pad = [
             (0, 0),
             (0, 0),
         ] + pad_widths  # add zero padding for batch and channel dimensions (no padding needed)
-        dask_array = da.pad(
-            dask_array, pad_width=full_pad, mode="constant", constant_values=0
-        )
+        dask_array = da.pad(dask_array, pad_width=full_pad, mode="constant", constant_values=0)
         return dask_array
 
-    def add_dataset(self, dataset, dataset_name):
+    def add_dataset(self, dataset: xr.DataArray, dataset_name: str):
+        """Register an xarray dataset under a name for batching."""
         self.datasets[dataset_name] = dataset
 
     def load_and_pad_zarr(
-        self, zarr_file, scale, dataset_name="volume", zarr_version="2.0"
+        self,
+        zarr_file: str,
+        scale: int,
+        dataset_name: str = "volume",
+        zarr_version: str = "2.0",
     ):
+        """Load multiscale OME-Zarr data and pad to volume_size grid."""
         # unique_name = f"{Path(zarr_file).stem}-{scale}-{uuid.uuid4().hex[:8]}"
         src_file = zarr_file + f"/{scale}/"
         try:
@@ -102,16 +132,12 @@ class ZarrDataset(Dataset):
                 zarr_version=zarr_version,
             ).as_dask_array()
         except Exception as e:
-            raise ValueError(
-                f"Failed to load zarr file: {src_file}. Error: {e}"
-            )
+            raise ValueError(f"Failed to load zarr file: {src_file}. Error: {e}")
 
         if self.do_pad_array:
             dask_array = self.pad_dask_array(dask_array)
 
-        if (
-            len(dask_array.shape) == 3
-        ):  # if the array is 3D, add batch and channel dimensions
+        if len(dask_array.shape) == 3:  # if the array is 3D, add batch and channel dimensions
             dask_array = da.expand_dims(dask_array, axis=(0, 1))
 
         xarray_array = xr.DataArray(
@@ -128,6 +154,7 @@ class ZarrDataset(Dataset):
         self.add_dataset(xarray_array, dataset_name)
 
     def init_batch_generator(self):
+        """Initialize xbatcher generator with overlap handling."""
         overlap_px = int(self.volume_size * self.overlap_pct)
         self.batch_generator = xbatcher.BatchGenerator(
             xr.Dataset(self.datasets),
@@ -149,6 +176,7 @@ class ZarrDataset(Dataset):
         self.indices = [i for i in range(len(self.batch_generator))]
 
     def _lazy_init_generator(self):
+        """Initialize the batch generator once (lazy)."""
         if self._is_initialized:
             return
         self.init_batch_generator()
@@ -156,6 +184,7 @@ class ZarrDataset(Dataset):
 
     @property
     def summary(self):
+        """Return dataset metadata useful for logging and debugging."""
         return {
             "sample": self.sample,
             "zarr_file": self.zarr_file,
@@ -163,35 +192,28 @@ class ZarrDataset(Dataset):
             "volume_size": self.volume_size,
             "platform": self.platform,
             "num_volumes": len(self),  # may be filtered in subclasses
-            "total_possible": (
-                len(self.batch_generator) if self._is_initialized else None
-            ),
+            "total_possible": (len(self.batch_generator) if self._is_initialized else None),
         }
 
     def __len__(self):
+        """Number of available blocks (filtered or full)."""
         if self._is_initialized:
             # Use indices length if present (supports filtering)
             if hasattr(self, "indices"):
                 return len(self.indices)
             return len(self.batch_generator)
         else:
-            return int(
-                np.prod(self.datasets["volume"].shape) / self.volume_size**3
-            )
+            return int(np.prod(self.datasets["volume"].shape) / self.volume_size**3)
 
     def __getitem__(self, idx):
+        """Return a (volume[, mask]) sample with optional transform applied."""
         # self._lazy_init_generator()
         rand_idx = np.random.randint(0, len(self.batch_generator))
         batch = self.batch_generator[rand_idx]
 
         # batch = self.batch_generator[int(self.indices[idx])]
-        origin = {
-            i: int(batch.coords[i].values[0])
-            for i in ["T", "C", "Z", "Y", "X"]
-        }
-        volume = np.squeeze(batch["volume"].data)[
-            np.newaxis, ...
-        ]  # add channel dim back
+        origin = {i: int(batch.coords[i].values[0]) for i in ["T", "C", "Z", "Y", "X"]}
+        volume = np.squeeze(batch["volume"].data)[np.newaxis, ...]  # add channel dim back
 
         return_dict = {
             "volume": volume,
@@ -227,21 +249,50 @@ class ZarrDataset(Dataset):
 
 
 class MaskedZarrDataset(ZarrDataset):
+    """Block sampler that filters volumes using a mask pyramid."""
+
     def __init__(
         self,
         *args,
-        mask_file,
-        downsampled_mask_level=None,
-        mask_threshold=0.5,
-        force_refilter=False,
-        block_prefilter=True,
-        lazy_init=True,
-        cache_lock_timeout=600,
-        cache_lock_poll_interval=1.0,
-        prefilter_in_workers=False,
-        minimum_occupied_volume=0.7,
+        mask_file: str,
+        downsampled_mask_level: Optional[int] = None,
+        mask_threshold: Optional[float] = 0.5,
+        force_refilter: bool = False,
+        block_prefilter: bool = True,
+        lazy_init: bool = True,
+        cache_lock_timeout: int = 600,
+        cache_lock_poll_interval: float = 1.0,
+        prefilter_in_workers: bool = False,
+        minimum_occupied_volume: float = 0.7,
         **kwargs,
     ):
+        """
+        Creates a MaskedZarrDataset that filters volumes using a mask pyramid.
+
+        Parameters
+        ----------
+        mask_file : str
+            Path where the mask is located.
+        downsampled_mask_level: Optional[int]=None
+            Level of the mask to use for filtering the volume.
+        mask_threshold: Optional[float]=0.5
+            Threshold to apply to the mask for filtering the volume.
+        force_refilter: bool=False
+            Whether to force re-filtering of the dataset even if cached indices exist.
+        block_prefilter: bool=True
+            Whether to prefilter blocks based on the mask before loading them.
+        lazy_init: bool=True
+            Whether to lazily initialize the mask and filtered indices.
+        cache_lock_timeout: int=600
+            Timeout for acquiring the cache lock in seconds.
+        cache_lock_poll_interval: float=1.0
+            Poll interval for checking the cache lock in seconds.
+        prefilter_in_workers: bool=False
+            Whether to prefilter blocks in worker processes.
+        minimum_occupied_volume: float=0.7
+            Minimum fraction of a block that must be valid to keep it.
+
+        """
         super().__init__(*args, **kwargs)
 
         self.mask_file = mask_file
@@ -277,19 +328,21 @@ class MaskedZarrDataset(ZarrDataset):
         from pathlib import Path
 
         # Create cache in user's home directory or temp directory
-        cache_base = (
-            Path.home() / ".cache" / "aind_octo_data_loaders" / "mask_cache"
-        )
+        cache_base = Path.home() / ".cache" / "aind_octo_data_loaders" / "mask_cache"
         cache_base.mkdir(parents=True, exist_ok=True)
 
         # Create a unique hash for the dataset to handle S3 paths and long names
-        dataset_str = f"{self.zarr_file}_{self.mask_file}_scale{self.scale}_vol{self.volume_size}_thr{self.mask_threshold}"
+        dataset_str = (
+            f"{self.zarr_file}_{self.mask_file}_scale{self.scale}"
+            f"_vol{self.volume_size}_thr{self.mask_threshold}"
+        )
         dataset_hash = hashlib.md5(dataset_str.encode()).hexdigest()
 
         cache_file = cache_base / f"{dataset_hash}.npy"
         return cache_file
 
     def _lazy_init_mask(self):
+        """Load mask at data scale and register it for batching."""
         if self._mask_initialized:
             return
 
@@ -302,7 +355,8 @@ class MaskedZarrDataset(ZarrDataset):
             ).as_dask_array()
         except Exception as e:
             print(
-                f"\n\tFailed to load mask zarr file: {self.mask_file} - scale {self.scale}. Error: {e}"
+                f"\n\tFailed to load mask zarr file: {self.mask_file}"
+                f" - scale {self.scale}. Error: {e}"
             )
             raise
 
@@ -331,6 +385,7 @@ class MaskedZarrDataset(ZarrDataset):
         self._mask_initialized = True
 
     def _ensure_filtered(self):
+        """Ensure filtered indices exist, coordinating with worker processes."""
         if self._did_filter and not self.force_refilter:
             return
 
@@ -347,14 +402,19 @@ class MaskedZarrDataset(ZarrDataset):
         self._filter_valid_indices()
 
     def _load_cached_indices(self, wait=False):
+        """Load cached indices; optionally wait for another process to write them."""
         cache_path = self._get_cache_path()
         lock_path = cache_path.with_suffix(cache_path.suffix + ".lock")
 
         def _try_load():
+            """
+            Tries to load the cached indices from the cache path.
+            """
             try:
                 valid_indices = np.load(cache_path).tolist()
                 print(
-                    f"\n\tLoaded cached filtered indices for {self.sample} at scale {self.scale}: {len(valid_indices)} volumes"
+                    f"\n\tLoaded cached filtered indices for {self.sample}"
+                    f" at scale {self.scale}: {len(valid_indices)} volumes"
                 )
                 self.indices = valid_indices
                 self._did_filter = True
@@ -381,7 +441,10 @@ class MaskedZarrDataset(ZarrDataset):
         return False
 
     def _filter_valid_indices(self):
-        """Filter valid indices from a coarse mask level and upscale to current resolution (vectorized)."""
+        """
+        Filter valid indices from a coarse mask level
+        and upscale to current resolution (vectorized).
+        """
         if self._did_filter and not self.force_refilter:
             return
 
@@ -396,7 +459,8 @@ class MaskedZarrDataset(ZarrDataset):
             try:
                 valid_indices = np.load(cache_path).tolist()
                 print(
-                    f"\n\tLoaded cached filtered indices for {self.sample} at scale {self.scale}: {len(valid_indices)} volumes"
+                    f"\n\tLoaded cached filtered indices for {self.sample}"
+                    f" at scale {self.scale}: {len(valid_indices)} volumes"
                 )
                 self.indices = valid_indices
                 self.force_refilter = False
@@ -407,9 +471,7 @@ class MaskedZarrDataset(ZarrDataset):
         lock_fd = None
         if not self.force_refilter:
             try:
-                lock_fd = os.open(
-                    lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY
-                )
+                lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                 os.write(lock_fd, str(os.getpid()).encode())
             except FileExistsError:
                 start = time.time()
@@ -422,14 +484,13 @@ class MaskedZarrDataset(ZarrDataset):
                     try:
                         valid_indices = np.load(cache_path).tolist()
                         print(
-                            f"\n\tLoaded cached filtered indices for {self.sample} at scale {self.scale}: {len(valid_indices)} volumes"
+                            f"\n\tLoaded cached filtered indices for {self.sample}"
+                            f" at scale {self.scale}: {len(valid_indices)} volumes"
                         )
                         self.indices = valid_indices
                         return
                     except Exception as e:
-                        print(
-                            f"\n\tFailed to load cache after wait, recomputing: {e}"
-                        )
+                        print(f"\n\tFailed to load cache after wait, recomputing: {e}")
 
         try:
             # Coarse filtering
@@ -470,27 +531,21 @@ class MaskedZarrDataset(ZarrDataset):
             block_occ = (
                 (trimmed >= self.mask_threshold)
                 .astype(np.float32)
-                .reshape(
-                    z_blocks, v_coarse, y_blocks, v_coarse, x_blocks, v_coarse
-                )
+                .reshape(z_blocks, v_coarse, y_blocks, v_coarse, x_blocks, v_coarse)
                 .mean(axis=(1, 3, 5))
                 .compute()
             )
-            coarse_passed = np.argwhere(
-                block_occ >= self.minimum_occupied_volume
-            )
+            coarse_passed = np.argwhere(block_occ >= self.minimum_occupied_volume)
 
             if len(coarse_passed) == 0:
-                print(
-                    f"\tCoarse prefilter found no valid blocks; all blocks assumed empty."
-                )
+                print("\tCoarse prefilter found no valid blocks; all blocks assumed empty.")
                 self.indices = []
                 np.save(cache_path, np.array(self.indices))
                 self._did_filter = True
                 return
 
             print(
-                f"\tCoarse prefilter kept {len(coarse_passed)} coarse blocks out of {z_blocks*y_blocks*x_blocks} total."
+                f"\tCoarse prefilter kept {len(coarse_passed)} coarse blocks out of {z_blocks * y_blocks * x_blocks} total."
             )
 
             # full-resolution block grid
@@ -524,28 +579,20 @@ class MaskedZarrDataset(ZarrDataset):
             x_hr = xc * step + np.tile(dx, len(coarse_passed))
 
             # Keep only blocks within bounds
-            mask = (
-                (z_hr < z_blocks_hr)
-                & (y_hr < y_blocks_hr)
-                & (x_hr < x_blocks_hr)
-            )
+            mask = (z_hr < z_blocks_hr) & (y_hr < y_blocks_hr) & (x_hr < x_blocks_hr)
             z_hr, y_hr, x_hr = z_hr[mask], y_hr[mask], x_hr[mask]
 
             # Convert Z,Y,X to linear indices
             valid_indices = (z_hr * y_blocks_hr + y_hr) * x_blocks_hr + x_hr
 
-            print(
-                f"\t{len(valid_indices)}/{len(self.indices)} valid indices after masking."
-            )
+            print(f"\t{len(valid_indices)}/{len(self.indices)} valid indices after masking.")
 
             # Save to cache
             np.save(cache_path, np.array(valid_indices))
 
             self.indices = valid_indices.tolist()
             self._did_filter = True
-            self.force_refilter = (
-                False  # prevent re-running on every __getitem__
-            )
+            self.force_refilter = False  # prevent re-running on every __getitem__
         finally:
             if lock_fd is not None:
                 os.close(lock_fd)
@@ -560,5 +607,6 @@ class MaskedZarrDataset(ZarrDataset):
         return super().__getitem__(idx)
 
     def __len__(self):
+        """Length reflects filtered indices, initializing if needed."""
         self._ensure_filtered()
         return super().__len__()
