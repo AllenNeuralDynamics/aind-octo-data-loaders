@@ -1,7 +1,12 @@
+"""Normalization transforms for uint16 volumetric data."""
+
 import numpy as np
 import torch
 
+
 class ScaleUint16ToFloat3D:
+    """Scale uint16 3D volumes to float tensors using selectable schemes."""
+
     def __init__(self, method="global", eps=1e-8):
         """
         Parameters
@@ -17,7 +22,8 @@ class ScaleUint16ToFloat3D:
         self.eps = eps
 
     def __call__(self, volume: np.ndarray) -> torch.Tensor:
-        #assert volume.dtype == np.uint16, "Expected uint16 input"
+        """Apply the selected normalization and return a float tensor."""
+        # assert volume.dtype == np.uint16, "Expected uint16 input"
 
         vol = volume.astype(np.float32)
 

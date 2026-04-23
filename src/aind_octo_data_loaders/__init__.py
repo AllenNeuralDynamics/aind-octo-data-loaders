@@ -2,7 +2,7 @@
 AIND-OCTO large-scale dataloaders
 """
 
-__version__ = "0.0.1"
+__version__ = "0.0.3"
 __authors__ = ["Camilo Laiton", "Geoffrey Schau"]
 __author_emails__ = [
     "camilo.laiton@alleninstitute.org",
