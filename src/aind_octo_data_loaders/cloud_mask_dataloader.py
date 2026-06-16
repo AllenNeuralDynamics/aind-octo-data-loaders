@@ -248,6 +248,124 @@ class ZarrDataset(Dataset):
         return volume
 
 
+class MultiChannelZarrDataset(ZarrDataset):
+    """Block-based OME-Zarr dataset that stacks multiple files as channels."""
+
+    def __init__(
+        self,
+        sample: str,
+        zarr_files: list[str],
+        scale: int,
+        volume_size: Optional[int] = 128,
+        do_pad_array: Optional[bool] = True,
+        platform: Optional[str] = None,
+        overlap_pct: Optional[float] = 0.0,
+        zarr_version: Optional[str] = "2.0",
+        transform=None,
+        return_mask: Optional[bool] = False,
+    ):
+        """
+        Initializes a multichannel zarr dataloader.
+
+        Parameters
+        ----------
+        sample : str
+            Sample identifier for the dataset.
+        zarr_files : list[str]
+            List of OME-Zarr files to stack as channels.
+        scale : int
+            Scale level to load from the multiscale OME-Zarr.
+        volume_size : Optional[int], default=128
+            Size of the cubic volumes to extract.
+        do_pad_array : Optional[bool], default=True
+            Whether to pad the array to be divisible by volume_size.
+        platform : Optional[str], default=None
+            Platform identifier (e.g., "HCR", "SmartSPIM").
+        overlap_pct : Optional[float], default=0.0
+            Percentage of overlap between adjacent volumes.
+        zarr_version : Optional[str], default="2.0"
+            Zarr version to use ("2.0" or "3.0").
+        transform : callable, default=None
+            Optional transform to apply to each volume.
+        return_mask : Optional[bool], default=False
+            Whether to return a mask along with the volume.
+        """
+        if not zarr_files or len(zarr_files) < 1:
+            raise ValueError("zarr_files must contain at least one path.")
+        if len(set(zarr_files)) != len(zarr_files):
+            raise ValueError("zarr_files must not contain duplicates.")
+
+        self.zarr_files = zarr_files
+
+        super().__init__(
+            sample=sample,
+            zarr_file=zarr_files[0],
+            scale=scale,
+            volume_size=volume_size,
+            do_pad_array=do_pad_array,
+            platform=platform,
+            overlap_pct=overlap_pct,
+            zarr_version=zarr_version,
+            transform=transform,
+            return_mask=return_mask,
+        )
+
+        # Load remaining channels into a single stacked dataset.
+        for idx, zarr_file in enumerate(zarr_files[1:], start=1):
+            self._load_as_channel(zarr_file, channel_index=idx)
+
+    def _load_as_channel(self, zarr_file: str, channel_index: int):
+        """Load a zarr file and place it into the requested channel index."""
+        try:
+            dask_array = OMEZarrReader(
+                data_path=zarr_file,
+                multiscale=str(self.scale),
+                zarr_version=self.zarr_version,
+            ).as_dask_array()
+        except Exception as e:
+            raise ValueError(f"Failed to load zarr file: {zarr_file}. Error: {e}")
+
+        if self.do_pad_array:
+            dask_array = self.pad_dask_array(dask_array)
+
+        if len(dask_array.shape) == 3:
+            dask_array = da.expand_dims(dask_array, axis=(0, 1))
+
+        if len(dask_array.shape) != 5:
+            raise ValueError(
+                f"Unsupported dask array shape: {dask_array.shape}. Expected 3D or 5D."
+            )
+
+        if dask_array.shape[2:] != self.datasets["volume"].shape[2:]:
+            raise ValueError(
+                "All channels must have the same Z/Y/X shape after padding."
+            )
+
+        if dask_array.shape[0] != 1 or dask_array.shape[1] != 1:
+            raise ValueError("Expected single T and C dimensions for each channel.")
+
+        # Append the new channel to the existing volume dataset.
+        existing = self.datasets["volume"].data
+        stacked = da.concatenate([existing, dask_array], axis=1)
+
+        xarray_array = xr.DataArray(
+            stacked,
+            dims=["T", "C", "Z", "Y", "X"],
+            coords={
+                "T": np.arange(stacked.shape[0]),
+                "C": np.arange(stacked.shape[1]),
+                "Z": np.arange(stacked.shape[2]),
+                "Y": np.arange(stacked.shape[3]),
+                "X": np.arange(stacked.shape[4]),
+            },
+        )
+
+        # Replace the dataset and reinitialize the generator.
+        self.datasets["volume"] = xarray_array
+        self._is_initialized = False
+        self._lazy_init_generator()
+
+
 class MaskedZarrDataset(ZarrDataset):
     """Block sampler that filters volumes using a mask pyramid."""
 
@@ -412,10 +530,10 @@ class MaskedZarrDataset(ZarrDataset):
             """
             try:
                 valid_indices = np.load(cache_path).tolist()
-                print(
-                    f"\n\tLoaded cached filtered indices for {self.sample}"
-                    f" at scale {self.scale}: {len(valid_indices)} volumes"
-                )
+                # print(
+                #     f"\n\tLoaded cached filtered indices for {self.sample}"
+                #     f" at scale {self.scale}: {len(valid_indices)} volumes"
+                # )
                 self.indices = valid_indices
                 self._did_filter = True
                 return True
@@ -458,10 +576,10 @@ class MaskedZarrDataset(ZarrDataset):
         if cache_path.exists() and not self.force_refilter:
             try:
                 valid_indices = np.load(cache_path).tolist()
-                print(
-                    f"\n\tLoaded cached filtered indices for {self.sample}"
-                    f" at scale {self.scale}: {len(valid_indices)} volumes"
-                )
+                # print(
+                #     f"\n\tLoaded cached filtered indices for {self.sample}"
+                #     f" at scale {self.scale}: {len(valid_indices)} volumes"
+                # )
                 self.indices = valid_indices
                 self.force_refilter = False
                 return
@@ -483,10 +601,10 @@ class MaskedZarrDataset(ZarrDataset):
                 if cache_path.exists():
                     try:
                         valid_indices = np.load(cache_path).tolist()
-                        print(
-                            f"\n\tLoaded cached filtered indices for {self.sample}"
-                            f" at scale {self.scale}: {len(valid_indices)} volumes"
-                        )
+                        # print(
+                        #     f"\n\tLoaded cached filtered indices for {self.sample}"
+                        #     f" at scale {self.scale}: {len(valid_indices)} volumes"
+                        # )
                         self.indices = valid_indices
                         return
                     except Exception as e:
@@ -610,3 +728,114 @@ class MaskedZarrDataset(ZarrDataset):
         """Length reflects filtered indices, initializing if needed."""
         self._ensure_filtered()
         return super().__len__()
+
+
+class MultiChannelMaskedZarrDataset(MaskedZarrDataset):
+    """Masked dataset that stacks multiple files as channels."""
+
+    def __init__(
+        self,
+        sample: str,
+        zarr_files: list[str],
+        scale: int,
+        volume_size: Optional[int] = 128,
+        do_pad_array: Optional[bool] = True,
+        platform: Optional[str] = None,
+        overlap_pct: Optional[float] = 0.0,
+        zarr_version: Optional[str] = "2.0",
+        transform=None,
+        return_mask: Optional[bool] = False,
+        mask_file: str | None = None,
+        downsampled_mask_level: Optional[int] = None,
+        mask_threshold: Optional[float] = 0.5,
+        force_refilter: bool = False,
+        block_prefilter: bool = True,
+        lazy_init: bool = True,
+        cache_lock_timeout: int = 600,
+        cache_lock_poll_interval: float = 1.0,
+        prefilter_in_workers: bool = False,
+        minimum_occupied_volume: float = 0.7,
+    ):
+        if not zarr_files or len(zarr_files) < 1:
+            raise ValueError("zarr_files must contain at least one path.")
+        if len(set(zarr_files)) != len(zarr_files):
+            raise ValueError("zarr_files must not contain duplicates.")
+        if not mask_file:
+            raise ValueError("mask_file is required for masked datasets.")
+
+        self.zarr_files = zarr_files
+
+        super().__init__(
+            sample=sample,
+            zarr_file=zarr_files[0],
+            scale=scale,
+            volume_size=volume_size,
+            do_pad_array=do_pad_array,
+            platform=platform,
+            overlap_pct=overlap_pct,
+            zarr_version=zarr_version,
+            transform=transform,
+            return_mask=return_mask,
+            mask_file=mask_file,
+            downsampled_mask_level=downsampled_mask_level,
+            mask_threshold=mask_threshold,
+            force_refilter=force_refilter,
+            block_prefilter=block_prefilter,
+            lazy_init=lazy_init,
+            cache_lock_timeout=cache_lock_timeout,
+            cache_lock_poll_interval=cache_lock_poll_interval,
+            prefilter_in_workers=prefilter_in_workers,
+            minimum_occupied_volume=minimum_occupied_volume,
+        )
+
+        for zarr_file in zarr_files[1:]:
+            self._load_as_channel(zarr_file)
+
+    def _load_as_channel(self, zarr_file: str):
+        """Load a zarr file and append it to the channel dimension."""
+        try:
+            dask_array = OMEZarrReader(
+                data_path=zarr_file,
+                multiscale=str(self.scale),
+                zarr_version=self.zarr_version,
+            ).as_dask_array()
+        except Exception as e:
+            raise ValueError(f"Failed to load zarr file: {zarr_file}. Error: {e}")
+
+        if self.do_pad_array:
+            dask_array = self.pad_dask_array(dask_array)
+
+        if len(dask_array.shape) == 3:
+            dask_array = da.expand_dims(dask_array, axis=(0, 1))
+
+        if len(dask_array.shape) != 5:
+            raise ValueError(
+                f"Unsupported dask array shape: {dask_array.shape}. Expected 3D or 5D."
+            )
+
+        if dask_array.shape[2:] != self.datasets["volume"].shape[2:]:
+            raise ValueError(
+                "All channels must have the same Z/Y/X shape after padding."
+            )
+
+        if dask_array.shape[0] != 1 or dask_array.shape[1] != 1:
+            raise ValueError("Expected single T and C dimensions for each channel.")
+
+        existing = self.datasets["volume"].data
+        stacked = da.concatenate([existing, dask_array], axis=1)
+
+        xarray_array = xr.DataArray(
+            stacked,
+            dims=["T", "C", "Z", "Y", "X"],
+            coords={
+                "T": np.arange(stacked.shape[0]),
+                "C": np.arange(stacked.shape[1]),
+                "Z": np.arange(stacked.shape[2]),
+                "Y": np.arange(stacked.shape[3]),
+                "X": np.arange(stacked.shape[4]),
+            },
+        )
+
+        self.datasets["volume"] = xarray_array
+        self._is_initialized = False
+        self._lazy_init_generator()
